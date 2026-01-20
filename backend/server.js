@@ -15,36 +15,33 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// Sync database and create tables
+// Sync Database
 sequelize.sync().then(() => console.log("✅ SQL Database Connected & Synced"));
 
-// 1. Register Route (Saves immediately)
+// --- AUTH ROUTES ---
 app.post('/api/register', async (req, res) => {
   try {
     const user = await User.create(req.body);
-    res.status(201).json({ message: "Registration successful", user });
-  } catch (err) {
-    res.status(400).json({ error: "Email already exists or invalid data" });
-  }
+    res.status(201).json({ message: "Registered", user });
+  } catch (err) { res.status(400).json({ error: "Registration failed" }); }
 });
 
-// 2. Login Route
 app.post('/api/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ where: { email, password } });
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
-    res.json({ user: { id: user.id, name: user.name, role: user.role } });
-  } catch (err) { res.status(500).json({ error: "Server error" }); }
+  const { email, password } = req.body;
+  const user = await User.findOne({ where: { email, password } });
+  if (user) res.json({ user: { id: user.id, name: user.name, role: user.role } });
+  else res.status(401).json({ error: "Invalid credentials" });
 });
 
-// 3. Create Donation Order
+// --- DONATION ROUTES ---
+
+// 1. Create Order (Saves as 'pending' immediately)
 app.post('/api/donate/create-order', async (req, res) => {
   const { amount, userId } = req.body;
   try {
     const order = await razorpay.orders.create({ amount: amount * 100, currency: "INR" });
     
-    // Save as pending regardless of payment completion
+    // Create record in SQL now so we can track 'pending' status
     await Donation.create({
       amount,
       userId,
@@ -53,10 +50,12 @@ app.post('/api/donate/create-order', async (req, res) => {
     });
     
     res.json(order);
-  } catch (err) { res.status(500).json({ error: "Razorpay error" }); }
+  } catch (err) {
+    res.status(500).json({ error: "Razorpay Order Creation Failed" });
+  }
 });
 
-// 4. Verify Payment
+// 2. Verify Success
 app.post('/api/donate/verify', async (req, res) => {
   const { razorpay_order_id, razorpay_payment_id } = req.body;
   try {
@@ -65,20 +64,35 @@ app.post('/api/donate/verify', async (req, res) => {
       { where: { razorpay_order_id } }
     );
     res.json({ status: "success" });
-  } catch (err) { res.status(500).json({ error: "Verification failed" }); }
+  } catch (err) {
+    res.status(500).json({ error: "Verification failed" });
+  }
 });
 
-// 5. Get User Donations
+// 3. Record Failure
+app.post('/api/donate/failure', async (req, res) => {
+  const { razorpay_order_id, reason } = req.body;
+  try {
+    await Donation.update(
+      { status: 'failed', failure_reason: reason },
+      { where: { razorpay_order_id } }
+    );
+    res.json({ status: "failure_recorded" });
+  } catch (err) {
+    res.status(500).json({ error: "Could not record failure" });
+  }
+});
+
+// 4. Fetch User History
 app.get('/api/donations/:userId', async (req, res) => {
-  const list = await Donation.findAll({ where: { userId: req.params.userId } });
+  const list = await Donation.findAll({ where: { userId: req.params.userId }, order: [['createdAt', 'DESC']] });
   res.json(list);
 });
 
-// 6. Admin: Get Everything (Populated)
+// 5. Admin View All
 app.get('/api/admin/all-donations', async (req, res) => {
-  const list = await Donation.findAll({ include: [User] });
+  const list = await Donation.findAll({ include: [User], order: [['createdAt', 'DESC']] });
   res.json(list);
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+app.listen(5000, () => console.log(`🚀 Server running on http://localhost:5000`));
